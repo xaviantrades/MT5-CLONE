@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mt5-market-data"
+version = "0.1.0"
+description = "Focused MT5 WebSocket live quotes and continuously synchronized candle history"
+requires-python = ">=3.10"
+dependencies = [
+  "websockets>=14,<16",
+  "pycryptodome>=3.19",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mt5_market_data*"]
