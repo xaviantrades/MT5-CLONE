@@ -80,11 +80,20 @@ export class CandleBuilder {
 
   addMinuteBar(bar) {
     if (!bar || !PERIODS.M1) return;
+    const key = this.key(bar.symbol, "M1");
+    const incomingTime = this.bucket(bar.timestamp, "M1");
+    const previousLatest = this.latestBucket.get(key) ?? 0;
+
     this.mergeBar(bar.symbol, "M1", bar);
     for (const timeframe of Object.keys(PERIODS)) {
       if (timeframe !== "M1") this.mergeBar(bar.symbol, timeframe, bar);
     }
-    this.onUpdate(bar.symbol, "M1", this.getLatest(bar.symbol, "M1"));
+
+    // Historical pages can arrive after live ticks. Never send an old candle
+    // to Lightweight Charts' update() API, which only accepts the newest bar.
+    if (incomingTime >= previousLatest) {
+      this.onUpdate(bar.symbol, "M1", this.getLatest(bar.symbol, "M1"));
+    }
   }
 
   addTick(quote) {
