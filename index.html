@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MT5 Live Chart</title>
+  <script src="https://unpkg.com/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, sans-serif; background: #0b111b; color: #e6edf6; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 18px; background: #101927; border-bottom: 1px solid #263244; flex-wrap: wrap; }
+    .brand { font-weight: 700; letter-spacing: .4px; }
+    .toolbar, .prices { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    select, button { color: #dce7f5; background: #182436; border: 1px solid #34445a; border-radius: 6px; padding: 8px 10px; cursor: pointer; }
+    button.active { background: #245b85; border-color: #3c8bc3; }
+    .status { color: #a9b8ca; font-size: 12px; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #d49b36; margin-right: 6px; }
+    .dot.connected { background: #2dbd83; }
+    .dot.error { background: #e15d68; }
+    main { padding: 12px 16px; }
+    .prices { padding: 4px 2px 12px; color: #9eafc4; font-size: 13px; }
+    .prices strong { color: #e6edf6; font-variant-numeric: tabular-nums; margin-left: 4px; }
+    #chart { height: min(76vh, 740px); min-height: 360px; width: 100%; border: 1px solid #263244; border-radius: 7px; overflow: hidden; }
+    #message { color: #8294aa; font-size: 12px; padding: 9px 2px; }
+    @media (max-width: 600px) { header { padding: 11px; } main { padding: 9px; } #chart { height: 68vh; min-height: 340px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">MT5 MARKET DATA</div>
+    <div class="toolbar">
+      <select id="symbol" aria-label="Symbol"></select>
+      <div id="timeframes" class="toolbar">
+        <button data-tf="M1" class="active">M1</button>
+        <button data-tf="M5">M5</button>
+        <button data-tf="M15">M15</button>
+        <button data-tf="H1">H1</button>
+        <button data-tf="H4">H4</button>
+        <button data-tf="D1">D1</button>
+      </div>
+    </div>
+    <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">Connecting…</span></div>
+  </header>
+  <main>
+    <div class="prices">
+      <span>Bid<strong id="bid">—</strong></span>
+      <span>Ask<strong id="ask">—</strong></span>
+      <span>Spread<strong id="spread">—</strong></span>
+      <span>History<strong id="history">Waiting</strong></span>
+    </div>
+    <div id="chart"></div>
+    <div id="message">Connecting to the MT5 data service…</div>
+  </main>
+
+  <script type="module">
+    import { CandleBuilder } from "./candles.js";
+
+    const $ = id => document.getElementById(id);
+    const builder = new CandleBuilder();
+    const symbolSelect = $("symbol");
+    let symbol = "";
+    let timeframe = "M1";
+    let socket = null;
+    let chartSeries = null;
+    let lastDisplayedTime = 0;
+
+    const chart = LightweightCharts.createChart($("chart"), {
+      layout: { background: { color: "#0b111b" }, textColor: "#a9b8ca" },
+      grid: { vertLines: { color: "#1b2737" }, horzLines: { color: "#1b2737" } },
+      rightPriceScale: { borderColor: "#34445a" },
+      timeScale: { borderColor: "#34445a", timeVisible: true, secondsVisible: false },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    });
+
+    function drawAll() {
+      if (chartSeries) chart.removeSeries(chartSeries);
+      chartSeries = chart.addCandlestickSeries({
+        upColor: "#16a879", downColor: "#e05260",
+        borderUpColor: "#16a879", borderDownColor: "#e05260",
+        wickUpColor: "#16a879", wickDownColor: "#e05260",
+      });
+      const bars = builder.getBars(symbol, timeframe);
+      chartSeries.setData(bars);
+      lastDisplayedTime = bars.length ? bars[bars.length - 1].time : 0;
+      if (bars.length) chart.timeScale().fitContent();
+    }
+
+    function updateLatest() {
+      const latest = builder.getLatest(symbol, timeframe);
+      if (!latest || !chartSeries || latest.time < lastDisplayedTime) return;
+      chartSeries.update(latest);
+      lastDisplayedTime = latest.time;
+    }
+
+    function setStatus(state, error = null) {
+      $("statusText").textContent = error ? state + ": " + error : state;
+      $("statusDot").className = "dot " + (state === "connected" ? "connected" : state === "error" ? "error" : "");
+    }
+
+    function requestHistory() {
+      if (socket && socket.readyState === WebSocket.OPEN && symbol) {
+        $("history").textContent = "Loading…";
+        socket.send(JSON.stringify({ type: "history", symbol, limit: 5000 }));
+      }
+    }
+
+    function connect() {
+      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(protocol + "//" + location.host + "/stream");
+
+      socket.addEventListener("open", () => {
+        $("message").textContent = "Connected to chart server. Waiting for MT5 feed…";
+      });
+
+      socket.addEventListener("message", event => {
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
+
+        if (data.type === "status") {
+          for (const item of data.symbols || []) {
+            if (![...symbolSelect.options].some(option => option.value === item)) {
+              symbolSelect.add(new Option(item, item));
+            }
+          }
+          if (!symbol && symbolSelect.options.length) {
+            symbol = symbolSelect.options[0].value;
+            symbolSelect.value = symbol;
+            requestHistory();
+          }
+          setStatus(data.state, data.error);
+          return;
+        }
+
+        if (data.type === "history" && data.symbol === symbol) {
+          builder.seed(symbol, data.candles);
+          $("history").textContent = data.candles.length.toLocaleString() + " M1 bars";
+          $("message").textContent = data.candles.length
+            ? "Broker history loaded. Waiting for live quote updates."
+            : "No cached M1 bars yet. History will appear as the MT5 engine backfills it.";
+          drawAll();
+          return;
+        }
+
+        if (data.type === "minute" && data.symbol === symbol) {
+          builder.addMinuteBar(data);
+          updateLatest();
+          return;
+        }
+
+        if (data.type === "quote") {
+          builder.addTick(data);
+          if (data.symbol === symbol) {
+            const digits = Math.max(2, String(data.bid).split(".")[1]?.length || 2);
+            $("bid").textContent = Number(data.bid).toFixed(digits);
+            $("ask").textContent = Number(data.ask).toFixed(digits);
+            $("spread").textContent = (Number(data.ask) - Number(data.bid)).toFixed(digits);
+            updateLatest();
+          }
+        }
+
+        if (data.type === "error") $("message").textContent = data.message;
+      });
+
+      socket.addEventListener("close", () => {
+        setStatus("disconnected");
+        setTimeout(connect, 2000);
+      });
+      socket.addEventListener("error", () => setStatus("chart server error"));
+    }
+
+    symbolSelect.addEventListener("change", () => {
+      symbol = symbolSelect.value;
+      $("bid").textContent = $("ask").textContent = $("spread").textContent = "—";
+      drawAll();
+      requestHistory();
+    });
+
+    $("timeframes").addEventListener("click", event => {
+      const button = event.target.closest("button[data-tf]");
+      if (!button) return;
+      timeframe = button.dataset.tf;
+      document.querySelectorAll("[data-tf]").forEach(item => {
+        item.classList.toggle("active", item === button);
+      });
+      drawAll();
+    });
+
+    new ResizeObserver(() => chart.applyOptions({ width: $("chart").clientWidth }))
+      .observe($("chart"));
+
+    connect();
+  </script>
+</body>
+</html>
