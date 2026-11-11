@@ -111,6 +111,7 @@
 
       socket.addEventListener("open", () => {
         $("message").textContent = "Connected to chart server. Waiting for MT5 feed…";
+        requestHistory();
       });
 
       socket.addEventListener("message", event => {
