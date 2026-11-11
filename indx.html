@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MT5 Live Market Chart</title>
+  <script src="https://unpkg.com/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, Arial, sans-serif; background:#0b1220; color:#dbe4f0; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:#0b1220; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 20px; border-bottom:1px solid #202c3d; background:#101a2a; }
+    .brand { font-weight:700; letter-spacing:.3px; }
+    .status { display:flex; align-items:center; gap:8px; color:#93a4ba; font-size:13px; }
+    .dot { width:8px; height:8px; border-radius:50%; background:#d69e36; }
+    .dot.online { background:#22c58b; }
+    .toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:14px 20px; border-bottom:1px solid #202c3d; }
+    select, button { color:#dbe4f0; background:#172438; border:1px solid #304158; border-radius:6px; padding:9px 12px; font-size:13px; }
+    button { cursor:pointer; }
+    button.active { background:#244b70; border-color:#3978ad; }
+    .price { margin-left:auto; font-size:20px; font-weight:650; font-variant-numeric:tabular-nums; }
+    .meta { display:flex; gap:18px; padding:10px 20px; color:#93a4ba; font-size:12px; }
+    .meta strong { color:#dbe4f0; font-weight:600; }
+    #chart { height:calc(100vh - 160px); min-height:360px; width:100%; }
+    #message { padding:8px 20px; color:#93a4ba; font-size:12px; }
+    @media(max-width:600px) { .topbar,.toolbar { padding:12px; } .price { width:100%; margin-left:0; } #chart { height:65vh; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">MT5 MARKET DATA</div>
+    <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">Connecting…</span></div>
+  </header>
+
+  <section class="toolbar">
+    <label for="symbol">Symbol</label>
+    <select id="symbol"></select>
+    <div id="timeframes"></div>
+    <div class="price" id="lastPrice">—</div>
+  </section>
+
+  <section class="meta">
+    <span>Bid: <strong id="bid">—</strong></span>
+    <span>Ask: <strong id="ask">—</strong></span>
+    <span>Spread: <strong id="spread">—</strong></span>
+  </section>
+
+  <div id="chart"></div>
+  <div id="message">Waiting for market data…</div>
+
+  <script type="module">
+    import { CandleBuilder } from "./public/candles.js";
+
+    const symbolSelect = document.getElementById("symbol");
+    const timeframeHost = document.getElementById("timeframes");
+    const statusText = document.getElementById("statusText");
+    const statusDot = document.getElementById("statusDot");
+    const message = document.getElementById("message");
+    const priceText = document.getElementById("lastPrice");
+    const bidText = document.getElementById("bid");
+    const askText = document.getElementById("ask");
+    const spreadText = document.getElementById("spread");
+
+    const chart = LightweightCharts.createChart(document.getElementById("chart"), {
+      layout: { background: { color: "#0b1220" }, textColor: "#a9b8ca" },
+      grid: { vertLines: { color: "#172438" }, horzLines: { color: "#172438" } },
+      rightPriceScale: { borderColor: "#26364b" },
+      timeScale: { borderColor: "#26364b", timeVisible: true, secondsVisible: false },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      localization: { locale: "en-GB" },
+    });
+
+    const series = chart.addCandlestickSeries({
+      upColor: "#16a879",
+      downColor: "#e05260",
+      borderUpColor: "#16a879",
+      borderDownColor: "#e05260",
+      wickUpColor: "#16a879",
+      wickDownColor: "#e05260",
+    });
+
+    new ResizeObserver(() => {
+      chart.applyOptions({ width: document.getElementById("chart").clientWidth });
+    }).observe(document.getElementById("chart"));
+
+    let socket;
+    let activeSymbol = "";
+    let activeTimeframe = "M1";
+    let loadedHistory = false;
+    const builder = new CandleBuilder((symbol, timeframe, candle) => {
+      if (symbol === activeSymbol && timeframe === activeTimeframe && candle) {
+        series.update({
+          time: candle.time,
+          open: candle.open,
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+        });
+      }
+    });
+
+    function setStatus(text, online = false) {
+      statusText.textContent = text;
+      statusDot.classList.toggle("online", online);
+    }
+
+    function renderTimeframes() {
+      timeframeHost.replaceChildren();
+      for (const timeframe of builder.getPeriods()) {
+        const button = document.createElement("button");
+        button.textContent = timeframe;
+        button.classList.toggle("active", timeframe === activeTimeframe);
+        button.addEventListener("click", () => {
+          activeTimeframe = timeframe;
+          renderTimeframes();
+          showChartData();
+        });
+        timeframeHost.append(button);
+      }
+    }
+
+    function showChartData() {
+      const candles = builder.getCandles(activeSymbol, activeTimeframe);
+      series.setData(candles.map(({ time, open, high, low, close }) => ({
+        time, open, high, low, close,
+      })));
+      if (candles.length) chart.timeScale().fitContent();
+      message.textContent = candles.length
+        ? `${candles.length} ${activeTimeframe} candles loaded. Live updates enabled.`
+        : "Waiting for historical candles…";
+    }
+
+    function requestHistory() {
+      if (socket?.readyState === WebSocket.OPEN && activeSymbol) {
+        loadedHistory = false;
+        socket.send(JSON.stringify({ type: "history", symbol: activeSymbol, limit: 5000 }));
+        message.textContent = "Loading historical M1 data…";
+      }
+    }
+
+    function connect() {
+      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(`${protocol}//${location.host}/stream`);
+
+      socket.addEventListener("open", () => {
+        setStatus("Connected to chart server", true);
+        requestHistory();
+      });
+
+      socket.addEventListener("message", (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "status") {
+          for (const symbol of data.symbols ?? []) {
+            if (![...symbolSelect.options].some((option) => option.value === symbol)) {
+              symbolSelect.add(new Option(symbol, symbol));
+            }
+          }
+          if (!activeSymbol && symbolSelect.options.length) {
+            activeSymbol = symbolSelect.options[0].value;
+            symbolSelect.value = activeSymbol;
+            requestHistory();
+          }
+        }
+
+        if (data.type === "history" && data.symbol === activeSymbol) {
+          builder.seed(activeSymbol, data.candles);
+          loadedHistory = true;
+          showChartData();
+        }
+
+        if (data.type === "tick") {
+          const q = data.quote;
+          builder.addTick(q);
+          if (q.symbol === activeSymbol) {
+            const digits = Math.max(2, String(q.bid).split(".")[1]?.length ?? 2);
+            bidText.textContent = Number(q.bid).toFixed(digits);
+            askText.textContent = Number(q.ask).toFixed(digits);
+            priceText.textContent = Number(q.bid).toFixed(digits);
+            spreadText.textContent = (q.ask - q.bid).toFixed(digits);
+          }
+        }
+
+        if (data.type === "minute" && data.candle.symbol === activeSymbol) {
+          builder.addMinuteBar(data.candle);
+          if (!loadedHistory) showChartData();
+        }
+
+        if (data.type === "error") message.textContent = data.message;
+      });
+
+      socket.addEventListener("close", () => {
+        setStatus("Disconnected — reconnecting");
+        setTimeout(connect, 2000);
+      });
+
+      socket.addEventListener("error", () => setStatus("Connection error"));
+    }
+
+    symbolSelect.addEventListener("change", () => {
+      activeSymbol = symbolSelect.value;
+      loadedHistory = false;
+      showChartData();
+      requestHistory();
+    });
+
+    renderTimeframes();
+    connect();
+  </script>
+</body>
+</html>
