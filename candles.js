@@ -65,7 +65,7 @@ export class CandleBuilder {
           lastMinute: minuteTime,
         });
       } else {
-        if (minuteTime < existing.firstMinute) {
+        if (minuteTime <= existing.firstMinute) {
           existing.firstMinute = minuteTime;
           existing.open = Number(bar.open);
         }
